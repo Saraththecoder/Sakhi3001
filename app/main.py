@@ -1,24 +1,70 @@
 from fastapi import FastAPI, Request
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+import httpx
+import os
 from app.config import settings
-from app.bot.handlers import start, handle_message
 from app.logging_config import setup_logging
+from app.services.user_service import get_or_create_user, update_user
+from app.services.cycle_service import predict_next_period
+from app.services.tip_service import get_daily_tip
+from app.analytics import track_event
 
 setup_logging()
 
 app = FastAPI()
 
-telegram_app = ApplicationBuilder().token(settings.TELEGRAM_TOKEN).build()
+TELEGRAM_API = f"https://api.telegram.org/bot{settings.TELEGRAM_TOKEN}"
 
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+async def send_message(chat_id: int, text: str, reply_markup=None):
+    payload = {
+        "chat_id": chat_id,
+        "text": text
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+
+    async with httpx.AsyncClient() as client:
+        await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
+
+    if "message" not in data:
+        return {"status": "ignored"}
+
+    message = data["message"]
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "")
+
+    user = await get_or_create_user(chat_id)
+
+    # START command
+    if text == "/start":
+        await track_event(chat_id, "start")
+        keyboard = {
+            "keyboard": [["English", "Telugu"]],
+            "resize_keyboard": True
+        }
+        await send_message(chat_id, "Welcome to Sakhi 🌸\nSelect language:", keyboard)
+        return {"status": "ok"}
+
+    # Language selection
+    if text in ["English", "Telugu"]:
+        await update_user(chat_id, {"language": text})
+        await track_event(chat_id, "language_selected")
+        await send_message(chat_id, "Enter last period date (DD-MM-YYYY):")
+        return {"status": "ok"}
+
+    # Period prediction
+    if user.get("language") and not user.get("last_period_date"):
+        await update_user(chat_id, {"last_period_date": text})
+        next_date = predict_next_period(text)
+        await track_event(chat_id, "prediction_generated")
+
+        await send_message(chat_id, f"Your next expected period: {next_date}")
+        await send_message(chat_id, get_daily_tip())
+        return {"status": "ok"}
+
     return {"status": "ok"}
 
 @app.get("/health")
