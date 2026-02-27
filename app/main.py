@@ -70,3 +70,17 @@ async def webhook(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+from app.database import analytics_collection, users_collection
+
+@app.get("/admin/stats")
+async def get_stats():
+    total_users = await users_collection.count_documents({})
+    total_events = await analytics_collection.count_documents({})
+    predictions = await analytics_collection.count_documents({"event": "prediction_generated"})
+    
+    return {
+        "total_users": total_users,
+        "total_events": total_events,
+        "predictions_generated": predictions
+    }
