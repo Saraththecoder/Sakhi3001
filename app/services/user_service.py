@@ -7,7 +7,8 @@ async def get_or_create_user(user_id: int):
             "telegram_id": user_id,
             "language": None,
             "last_period_date": None,
-            "cycle_lengths": []
+            "cycle_lengths": [],
+            "state": "NEW"   # 👈 add state
         }
         await users_collection.insert_one(user)
     return user
